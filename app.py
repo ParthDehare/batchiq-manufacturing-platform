@@ -25,33 +25,76 @@ ALLOWED_EXT = {'xlsx', 'xls'}
 os.makedirs(DATA_DIR,   exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-state = dict(df1=None,df2=None,model=None,scaler=None,fingerprint=None,
-             health_scores=None,energy_stats={},ranked_df=None,
-             golden_id='T059',golden_score=0.0,loaded=False)
+state = dict(df1=None, df2=None, model=None, scaler=None, fingerprint=None,
+             health_scores=None, energy_stats={}, ranked_df=None,
+             golden_id='T059', golden_score=0.0, loaded=False)
 
-# Always load from pkl - never retrain on server
-import joblib
-pkl = os.path.join(MODELS_DIR, 'quality_model.pkl')
-if os.path.exists(pkl):
-    print("Loading cached model...")
-    model  = joblib.load(os.path.join(MODELS_DIR, 'quality_model.pkl'))
-    scaler = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
-else:
-    print("Training model...")
-    model, scaler = train_quality_model(df1, MODELS_DIR)
+# ── Core init ─────────────────────────────────────────────────────────────────
+def load_and_init(force_retrain=False):
+    global state
+    if not os.path.exists(PROD_FILE):
+        print("No production data — demo mode"); return False
+    if not os.path.exists(PROC_FILE):
+        print("No process data — demo mode");    return False
+    try:
+        import joblib
+        print("Loading data files...")
+        df1 = pd.read_excel(PROD_FILE); df1.columns = df1.columns.str.strip()
+        df2 = pd.read_excel(PROC_FILE); df2.columns = df2.columns.str.strip()
+        df1 = add_energy_co2(df1)
+
+        pkl = os.path.join(MODELS_DIR, 'quality_model.pkl')
+        if force_retrain or not os.path.exists(pkl):
+            print("Training model...")
+            model, scaler = train_quality_model(df1, MODELS_DIR)
+        else:
+            print("Loading cached model...")
+            model  = joblib.load(os.path.join(MODELS_DIR, 'quality_model.pkl'))
+            scaler = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
+
+        fingerprint   = compute_fingerprint(df2)
+        health_scores = compute_all_health(df2)
+        energy_stats  = get_energy_stats(df1)
+        ranked_df     = score_batches(df1)
+        df1 = df1.merge(ranked_df[['Batch_ID','composite_score']], on='Batch_ID', how='left')
+        golden_id    = str(ranked_df.iloc[0]['Batch_ID'])
+        golden_score = float(ranked_df.iloc[0]['composite_score'])
+
+        avail = [c for c in FEATURE_COLS if c in df1.columns]
+        if len(avail) == len(FEATURE_COLS):
+            X_sc = scaler.transform(df1[FEATURE_COLS].values)
+            preds = model.predict(X_sc)
+            pdf   = pd.DataFrame(preds, columns=TARGET_COLS, index=df1.index)
+            fail  = pd.Series(False, index=df1.index)
+            for col,(lo,hi) in SPEC_LIMITS.items():
+                if col in pdf.columns:
+                    if lo is not None: fail |= pdf[col] < lo
+                    if hi is not None: fail |= pdf[col] > hi
+            df1['_pass'] = ~fail
+
+        state.update(df1=df1, df2=df2, model=model, scaler=scaler,
+                     fingerprint=fingerprint, health_scores=health_scores,
+                     energy_stats=energy_stats, ranked_df=ranked_df,
+                     golden_id=golden_id, golden_score=golden_score, loaded=True)
+        fc = int((~df1['_pass']).sum()) if '_pass' in df1.columns else '?'
+        print(f"Ready | Golden:{golden_id} | Fails:{fc}/{len(df1)}")
+        return True
+    except Exception as e:
+        print(f"Init error: {e}"); traceback.print_exc(); return False
 
 def allowed_file(fn):
     return '.' in fn and fn.rsplit('.',1)[1].lower() in ALLOWED_EXT
 
 def get_fail_info():
     df1 = state['df1']
-    if df1 is None: return [],0,0
+    if df1 is None: return [], 0, 0
     if '_pass' in df1.columns:
         fail_ids = df1[~df1['_pass']]['Batch_ID'].astype(str).tolist()
     else:
         fail_ids = []
-    total = len(df1)
-    return fail_ids, len(fail_ids), total
+    return fail_ids, len(fail_ids), len(df1)
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route('/')
 def index():
@@ -62,14 +105,12 @@ def index():
     fp  = s['fingerprint']
     hs  = s['health_scores']
     es  = s['energy_stats']
-    # Compression share from real fingerprint
     comp_share = 50.4
     if fp:
         total_e = sum(v['energy_kwh'] for v in fp.values()) or 1
         if 'Compression' in fp:
             comp_share = round(fp['Compression']['energy_kwh']/total_e*100,1)
     maint = get_maintenance_summary(hs) if hs else {'critical_count':0,'critical_phases':[],'warning_count':0}
-    # Top batches
     top_batches = []
     ranked_df = s['ranked_df']
     if ranked_df is not None:
@@ -81,22 +122,20 @@ def index():
                 'dissolution':round(float(row.get('Dissolution_Rate',0)),1),
                 'energy':     round(float(row.get('Energy_kWh',0)),1),
                 'status':     'FAIL' if bid in fail_ids else 'PASS'})
-    # Batch chart
     batch_chart = []
     if df1 is not None and 'composite_score' in df1.columns:
         for _, row in df1.iterrows():
             batch_chart.append({'id':str(row['Batch_ID']),
                 'score':round(float(row['composite_score']),3),
                 'pass': bool(row.get('_pass', True))})
-    # Phase energy donut from real data
     phase_energy = {}
     if fp:
         total_e = sum(v['energy_kwh'] for v in fp.values()) or 1
         for ph,v in fp.items():
             phase_energy[ph] = round(v['energy_kwh']/total_e*100,1)
-    kpis = dict(loaded=s['loaded'],fail_count=fail_count,total=total,fail_rate=fail_rate,
-                golden_id=s['golden_id'],golden_score=round(s['golden_score'],4),
-                energy_min=es.get('min_energy',0),energy_max=es.get('max_energy',0),
+    kpis = dict(loaded=s['loaded'], fail_count=fail_count, total=total, fail_rate=fail_rate,
+                golden_id=s['golden_id'], golden_score=round(s['golden_score'],4),
+                energy_min=es.get('min_energy',0), energy_max=es.get('max_energy',0),
                 energy_mean=es.get('mean_energy',0),
                 co2_mean=round(es.get('total_co2',0)/total,1) if total else 0,
                 compression_share=comp_share,
@@ -150,17 +189,16 @@ def energy():
                 'energy_pct':round(v['energy_kwh']/total_e*100,1),
                 'power_anomalies':v['power_anomalies'],'vib_anomalies':v['vib_anomalies']})
     phase_rows.sort(key=lambda x: x['energy_pct'], reverse=True)
-    chart_labels = json.dumps([r['phase'] for r in phase_rows])
-    chart_energy = json.dumps([r['energy_pct'] for r in phase_rows])
-    chart_power  = json.dumps([r['mean_power'] for r in phase_rows])
     batch_energy = []
     if df1 is not None and 'Energy_kWh' in df1.columns:
         for _,row in df1.iterrows():
             batch_energy.append({'id':str(row['Batch_ID']),
                 'energy':round(float(row['Energy_kWh']),2),'co2':round(float(row['CO2_kg']),2)})
     return render_template('energy.html', phase_rows=phase_rows, energy_stats=es,
-                           chart_labels=chart_labels, chart_energy=chart_energy,
-                           chart_power=chart_power, batch_energy=json.dumps(batch_energy))
+                           chart_labels=json.dumps([r['phase'] for r in phase_rows]),
+                           chart_energy=json.dumps([r['energy_pct'] for r in phase_rows]),
+                           chart_power=json.dumps([r['mean_power'] for r in phase_rows]),
+                           batch_energy=json.dumps(batch_energy))
 
 @app.route('/golden-batch')
 def golden_batch():
@@ -218,7 +256,7 @@ def upload():
                 if not val['valid']:
                     flash(f'Missing columns: {val["missing_columns"]}','error'); return redirect(request.url)
                 if os.path.abspath(save_path) != os.path.abspath(PROD_FILE):
-                 shutil.copy(save_path, PROD_FILE)
+                    shutil.copy(save_path, PROD_FILE)
                 for f in ['quality_model.pkl','scaler.pkl']:
                     p=os.path.join(MODELS_DIR,f)
                     if os.path.exists(p): os.remove(p)
@@ -234,14 +272,14 @@ def upload():
                 val = validate_process_file(new_df)
                 if not val['valid']:
                     flash(f'Missing columns: {val["missing_columns"]}','error'); return redirect(request.url)
-                if os.path.abspath(save_path) != os.path.abspath(PROC_FILE):    # ← ADD THIS
-                 shutil.copy(save_path, PROC_FILE)
+                if os.path.abspath(save_path) != os.path.abspath(PROC_FILE):
+                    shutil.copy(save_path, PROC_FILE)
                 ok = load_and_init()
                 if ok: flash('Process sensor data loaded & analytics refreshed!','success')
                 upload_result={'type':'process','rows':len(new_df),'predictions':[]}
             else:
                 if not state['loaded']:
-                    flash('Load base data first before predict-only mode.','error'); return redirect(request.url)
+                    flash('Load base data first.','error'); return redirect(request.url)
                 new_df = add_energy_co2(new_df)
                 preds  = predict_batch_df(state['model'],state['scaler'],new_df)
                 flash(f'Predictions generated for {len(new_df)} batches!','success')
@@ -282,6 +320,10 @@ def api_status():
                     'golden_score':s['golden_score'],
                     'total_batches':len(s['df1']) if s['df1'] is not None else 0})
 
-if __name__=='__main__':
-    load_and_init()
-    app.run(debug=True, port=5000, use_reloader=False)
+# ── Boot ──────────────────────────────────────────────────────────────────────
+# This line runs for BOTH local (python app.py) AND server (gunicorn)
+load_and_init()
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False)
