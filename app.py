@@ -29,54 +29,16 @@ state = dict(df1=None,df2=None,model=None,scaler=None,fingerprint=None,
              health_scores=None,energy_stats={},ranked_df=None,
              golden_id='T059',golden_score=0.0,loaded=False)
 
-def load_and_init(force_retrain=False):
-    global state
-    if not os.path.exists(PROD_FILE):
-        print("batch_production_data.xlsx missing"); return False
-    if not os.path.exists(PROC_FILE):
-        print("batch_process_data.xlsx missing");   return False
-    try:
-        print("Loading data...")
-        df1 = pd.read_excel(PROD_FILE); df1.columns = df1.columns.str.strip()
-        df2 = pd.read_excel(PROC_FILE); df2.columns = df2.columns.str.strip()
-        df1 = add_energy_co2(df1)
-        import joblib
-        pkl = os.path.join(MODELS_DIR, 'quality_model.pkl')
-        if force_retrain or not os.path.exists(pkl):
-            print("Training model..."); model, scaler = train_quality_model(df1, MODELS_DIR)
-        else:
-            print("Loading cached model")
-            model  = joblib.load(os.path.join(MODELS_DIR, 'quality_model.pkl'))
-            scaler = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
-        fingerprint   = compute_fingerprint(df2)
-        health_scores = compute_all_health(df2)
-        energy_stats  = get_energy_stats(df1)
-        ranked_df     = score_batches(df1)
-        # Merge composite score back into df1
-        df1 = df1.merge(ranked_df[['Batch_ID','composite_score']], on='Batch_ID', how='left')
-        golden_id    = str(ranked_df.iloc[0]['Batch_ID'])
-        golden_score = float(ranked_df.iloc[0]['composite_score'])
-        # Compute pass/fail via ML
-        avail = [c for c in FEATURE_COLS if c in df1.columns]
-        if len(avail) == len(FEATURE_COLS):
-            X_sc = scaler.transform(df1[FEATURE_COLS].values)
-            preds = model.predict(X_sc)
-            pdf   = pd.DataFrame(preds, columns=TARGET_COLS, index=df1.index)
-            fail  = pd.Series(False, index=df1.index)
-            for col,(lo,hi) in SPEC_LIMITS.items():
-                if col in pdf.columns:
-                    if lo is not None: fail |= pdf[col] < lo
-                    if hi is not None: fail |= pdf[col] > hi
-            df1['_pass'] = ~fail
-        state.update(df1=df1,df2=df2,model=model,scaler=scaler,
-                     fingerprint=fingerprint,health_scores=health_scores,
-                     energy_stats=energy_stats,ranked_df=ranked_df,
-                     golden_id=golden_id,golden_score=golden_score,loaded=True)
-        fc = int((~df1['_pass']).sum()) if '_pass' in df1.columns else '?'
-        print(f"Ready | Golden:{golden_id} | Fails:{fc}/{len(df1)}")
-        return True
-    except Exception as e:
-        print(f"Init error: {e}"); traceback.print_exc(); return False
+# Always load from pkl - never retrain on server
+import joblib
+pkl = os.path.join(MODELS_DIR, 'quality_model.pkl')
+if os.path.exists(pkl):
+    print("Loading cached model...")
+    model  = joblib.load(os.path.join(MODELS_DIR, 'quality_model.pkl'))
+    scaler = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
+else:
+    print("Training model...")
+    model, scaler = train_quality_model(df1, MODELS_DIR)
 
 def allowed_file(fn):
     return '.' in fn and fn.rsplit('.',1)[1].lower() in ALLOWED_EXT
