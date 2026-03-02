@@ -7,4 +7,4 @@ shap
 scipy
 joblib
 openpyxl
-matplotlib
+matplotlibgunicorn==21.2.0 
