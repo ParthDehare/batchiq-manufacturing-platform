@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Quality Prediction — BatchIQ{% endblock %}
+{% block page_title %}Quality Prediction{% endblock %}
+
+{% block content %}
+{% if error %}
+<div class="alert alert-red" style="margin-bottom:16px;">❌ {{ error }}</div>
+{% endif %}
+
+<div class="grid-60-40">
+  <!-- Form -->
+  <div class="card">
+    <div class="card-header">
+      <div><div class="card-title">Process Parameters</div><div class="card-subtitle">Sliders range = actual data min/max</div></div>
+      {% if golden_params %}<button class="btn btn-outline" onclick="fillGolden()" style="font-size:12px;">★ Fill Golden ({{ golden_params }})</button>{% endif %}
+    </div>
+    <form method="POST">
+      <div class="grid-2">
+        {% set units = {'Granulation_Time':'min','Binder_Amount':'g','Drying_Temp':'°C',
+                        'Drying_Time':'min','Compression_Force':'kN','Machine_Speed':'RPM','Lubricant_Conc':'%'} %}
+        {% for col in feature_cols %}
+        {% set rng = ranges.get(col, {'min':0,'max':100,'mean':50}) %}
+        <div class="form-group">
+          <label>{{ col.replace('_',' ') }} <span style="color:var(--text-muted);">({{ units.get(col,'') }})</span></label>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <input type="range" id="r_{{ col }}" min="{{ rng.min }}" max="{{ rng.max }}" step="0.1"
+                   value="{{ input_vals.get(col, rng.mean) }}"
+                   oninput="document.getElementById('n_{{ col }}').value=parseFloat(this.value).toFixed(1)"
+                   style="flex:1;height:4px;padding:0;border:none;cursor:pointer;accent-color:var(--accent);">
+            <input type="number" id="n_{{ col }}" name="{{ col }}"
+                   value="{{ input_vals.get(col, rng.mean) }}"
+                   step="0.1" min="{{ rng.min }}" max="{{ rng.max }}"
+                   oninput="document.getElementById('r_{{ col }}').value=this.value"
+                   style="width:72px;">
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:1px;">
+            <span>{{ rng.min }}</span><span>{{ rng.max }}</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px;">
+        <button type="submit" class="btn btn-primary" style="flex:1;justify-content:center;">◈ Run Prediction</button>
+        <button type="button" class="btn btn-outline" onclick="fillGolden()">★ Golden</button>
+        <button type="button" class="btn btn-outline" onclick="fillMean()">↺ Reset</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Results -->
+  <div>
+    {% if result %}
+    {% set pass_count = result.values()|selectattr('status','equalto','PASS')|list|length %}
+    {% set fail_count = result.values()|selectattr('status','equalto','FAIL')|list|length %}
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-header">
+        <div class="card-title">Prediction Results</div>
+        <span class="kpi-badge {% if fail_count==0 %}badge-green{% else %}badge-red{% endif %}">
+          {{ pass_count }} PASS / {{ fail_count }} FAIL
+        </span>
+      </div>
+      {% for metric, info in result.items() %}
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:8px;margin-bottom:5px;
+           background:{% if info.status=='FAIL' %}#fef2f2{% elif info.status=='PASS' %}#f0fdf4{% else %}var(--surface-2){% endif %};">
+        <span style="font-size:13px;color:var(--text-secondary);">{{ metric.replace('_',' ') }}</span>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span class="mono" style="font-weight:700;">{{ info.value }}</span>
+          {% if info.status != 'N/A' %}
+          <span class="pill {% if info.status=='PASS' %}pill-green{% else %}pill-red{% endif %}">{{ info.status }}</span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if shap_data %}
+    <div class="card">
+      <div class="card-header"><div class="card-title">SHAP — Feature Impact on Hardness</div></div>
+      <div style="position:relative;height:200px;"><canvas id="shapChart"></canvas></div>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div class="card" style="text-align:center;padding:40px 20px;">
+      <div style="font-size:48px;margin-bottom:12px;">◈</div>
+      <div style="font-weight:600;margin-bottom:6px;">Set parameters and run</div>
+      <div style="color:var(--text-muted);font-size:13px;">Adjust sliders on the left and click Run Prediction</div>
+    </div>
+    {% endif %}
+
+    <!-- Spec limits ref -->
+    <div class="card" style="margin-top:14px;">
+      <div class="card-title" style="margin-bottom:10px;font-size:13px;">Spec Limits</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+        {% for name,limit in [('Hardness','50–130 N'),('Friability','< 1.0%'),('Dissolution','> 80%'),('Uniformity','95–105%'),('Moisture','< 3.0%')] %}
+        <div style="padding:7px 10px;background:var(--surface-2);border-radius:6px;">
+          <div style="font-size:10px;color:var(--text-muted);">{{ name }}</div>
+          <div class="mono" style="font-size:12px;font-weight:600;">{{ limit }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const golden = {{ golden_params | tojson }};
+const ranges  = {{ ranges | tojson }};
+
+function fillGolden() {
+  for(const [col,val] of Object.entries(golden)){
+    const r=document.getElementById('r_'+col), n=document.getElementById('n_'+col);
+    if(r) r.value=val; if(n) n.value=val;
+  }
+}
+function fillMean() {
+  for(const [col,info] of Object.entries(ranges)){
+    const r=document.getElementById('r_'+col), n=document.getElementById('n_'+col);
+    if(r) r.value=info.mean; if(n) n.value=info.mean;
+  }
+}
+
+{% if shap_data %}
+const shapData = {{ shap_data | safe }};
+const sCtx = document.getElementById('shapChart');
+if(sCtx){
+  const keys=Object.keys(shapData), vals=Object.values(shapData);
+  new Chart(sCtx,{
+    type:'bar',
+    data:{labels:keys.map(k=>k.replace(/_/g,' ')),
+      datasets:[{data:vals,backgroundColor:vals.map(v=>v>=0?'#2d5a27':'#ef4444'),borderWidth:0,borderRadius:4}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false}},
+      scales:{x:{grid:{color:'#f0f0ec'},ticks:{font:{size:11}}},y:{ticks:{font:{size:11}},grid:{display:false}}}}
+  });
+}
+{% endif %}
+</script>
+{% endblock %}

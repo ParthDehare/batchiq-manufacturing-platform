@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Energy Monitor — BatchIQ{% endblock %}
+{% block page_title %}Energy Monitor{% endblock %}
+
+{% block content %}
+<!-- KPI strip -->
+<div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;">
+  <div class="kpi-card">
+    <div class="kpi-label">Min Energy / Batch</div>
+    <div class="kpi-value">{{ energy_stats.min_energy }}</div>
+    <div class="kpi-sub">kWh</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Max Energy / Batch</div>
+    <div class="kpi-value">{{ energy_stats.max_energy }}</div>
+    <div class="kpi-sub">kWh</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Avg Energy / Batch</div>
+    <div class="kpi-value">{{ energy_stats.mean_energy }}</div>
+    <div class="kpi-sub">kWh</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Total CO₂ Emitted</div>
+    <div class="kpi-value">{{ energy_stats.total_co2 }}</div>
+    <div class="kpi-sub">kg CO₂ across all batches</div>
+  </div>
+</div>
+
+<div class="grid-60-40" style="margin-bottom:20px;">
+  <!-- Phase energy bar -->
+  <div class="card">
+    <div class="card-header">
+      <div><div class="card-title">Energy Share by Phase</div><div class="card-subtitle">% of total kWh consumed</div></div>
+    </div>
+    <div style="position:relative;height:260px;"><canvas id="energyBar"></canvas></div>
+  </div>
+
+  <!-- Anomaly list -->
+  <div class="card">
+    <div class="card-header"><div class="card-title">Anomaly Summary</div></div>
+    {% if phase_rows %}
+    <div style="display:flex;flex-direction:column;gap:5px;">
+      {% for r in phase_rows %}
+      <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;background:var(--surface-2);">
+        <span style="font-size:12px;font-weight:600;width:100px;">{{ r.phase }}</span>
+        <span class="mono" style="flex:1;font-size:12px;color:var(--text-muted);">{{ r.energy_kwh }} kWh ({{ r.energy_pct }}%)</span>
+        {% if r.power_anomalies > 0 or r.vib_anomalies > 0 %}
+          <span class="pill pill-red" style="font-size:10px;">⚠ {{ r.power_anomalies + r.vib_anomalies }}</span>
+        {% else %}
+          <span class="pill pill-green" style="font-size:10px;">OK</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div style="color:var(--text-muted);text-align:center;padding:30px;">No fingerprint data</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Phase stats table -->
+{% if phase_rows %}
+<div class="card" style="margin-bottom:20px;">
+  <div class="card-header">
+    <div class="card-title">Phase-Level Statistics</div>
+    <div class="card-subtitle">Statistical control limits = mean ± 3σ</div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Phase</th><th>Energy %</th><th>Avg Power (kW)</th>
+        <th>UCL Power</th><th>Max Power</th>
+        <th>Avg Vib (mm/s)</th><th>Max Vib</th>
+        <th>Power Alerts</th><th>Vib Alerts</th>
+      </tr></thead>
+      <tbody>
+        {% for r in phase_rows %}
+        <tr>
+          <td><strong>{{ r.phase }}</strong></td>
+          <td><div style="display:flex;align-items:center;gap:6px;">
+            <div style="width:50px;height:5px;background:var(--border);border-radius:3px;overflow:hidden;">
+              <div style="height:100%;width:{{ [r.energy_pct*2,100]|min }}%;background:var(--accent);border-radius:3px;"></div>
+            </div>
+            <span class="mono">{{ r.energy_pct }}%</span>
+          </div></td>
+          <td class="mono">{{ r.mean_power }}</td>
+          <td class="mono">{{ r.ucl_power }}</td>
+          <td class="mono" {% if r.max_power > r.ucl_power %}style="color:var(--red);font-weight:700;"{% endif %}>{{ r.max_power }}</td>
+          <td class="mono">{{ r.mean_vib }}</td>
+          <td class="mono" {% if r.max_vib > r.mean_vib * 2 %}style="color:var(--red);font-weight:700;"{% endif %}>{{ r.max_vib }}</td>
+          <td>{% if r.power_anomalies %}<span class="pill pill-red">{{ r.power_anomalies }}</span>{% else %}<span class="pill pill-green">0</span>{% endif %}</td>
+          <td>{% if r.vib_anomalies %}<span class="pill pill-red">{{ r.vib_anomalies }}</span>{% else %}<span class="pill pill-green">0</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- Batch energy scatter -->
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Energy vs CO₂ — All Batches</div>
+    <div class="card-subtitle">Each point = one batch</div>
+  </div>
+  <div style="position:relative;height:220px;"><canvas id="scatterChart"></canvas></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const chartLabels = {{ chart_labels | safe }};
+const chartEnergy = {{ chart_energy | safe }};
+const chartPower  = {{ chart_power  | safe }};
+const batchEnergy = {{ batch_energy | safe }};
+
+// Phase energy bar
+const eCtx = document.getElementById('energyBar');
+if (eCtx) {
+  const colors = ['#2d5a27','#3d7a37','#4d9a47','#6ab85e','#88c67c','#a8d49c','#c8e4bc','#e8f4dc'];
+  new Chart(eCtx, {
+    type:'bar',
+    data:{ labels:chartLabels,
+      datasets:[{ label:'Energy %', data:chartEnergy,
+        backgroundColor:colors.slice(0,chartLabels.length), borderWidth:0, borderRadius:6 }]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false} },
+      scales:{ x:{grid:{display:false},ticks:{font:{size:11}}},
+               y:{ticks:{callback:v=>v+'%',font:{size:11}},grid:{color:'#f0f0ec'}} }}
+  });
+}
+
+// Scatter
+const sCtx = document.getElementById('scatterChart');
+if (sCtx && batchEnergy.length) {
+  new Chart(sCtx, {
+    type:'scatter',
+    data:{ datasets:[{ label:'Batches',
+      data: batchEnergy.map(b=>({x:b.energy, y:b.co2, id:b.id})),
+      backgroundColor:'rgba(45,90,39,0.6)', pointRadius:5, pointHoverRadius:8 }]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ tooltip:{ callbacks:{ label: c=>`${c.raw.id}: ${c.raw.x} kWh / ${c.raw.y} kg CO₂` }}},
+      scales:{ x:{title:{display:true,text:'Energy (kWh)'},grid:{color:'#f0f0ec'}},
+               y:{title:{display:true,text:'CO₂ (kg)'},grid:{color:'#f0f0ec'}} }}
+  });
+}
+</script>
+{% endblock %}

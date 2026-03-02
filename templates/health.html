@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Asset Health — BatchIQ{% endblock %}
+{% block page_title %}Asset Health & Predictive Maintenance{% endblock %}
+
+{% block content %}
+<div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
+  <div class="kpi-card">
+    <div class="kpi-label">Critical Phases</div>
+    <div class="kpi-value" style="color:var(--red);">{{ maint.critical_count }}</div>
+    <div class="kpi-sub">{{ maint.critical_phases|join(', ') or 'None' }}</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Warning Phases</div>
+    <div class="kpi-value" style="color:var(--yellow);">{{ maint.warning_count }}</div>
+    <div class="kpi-sub">{{ maint.warning_phases|join(', ') or 'None' }}</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Healthy Phases</div>
+    <div class="kpi-value" style="color:var(--green);">{{ maint.healthy_count }}</div>
+    <div class="kpi-sub">All sensors nominal</div>
+  </div>
+</div>
+
+<!-- Alerts -->
+{% for phase, data in health_scores.items() %}
+  {% if data.alert_level == 'CRITICAL' %}
+  <div class="alert alert-red" style="margin-bottom:10px;">
+    🔴 <div><strong>CRITICAL — {{ phase }}</strong><br>{{ data.alert_message }}</div>
+  </div>
+  {% elif data.alert_level == 'WARNING' %}
+  <div class="alert alert-yellow" style="margin-bottom:10px;">
+    🟡 <div><strong>WARNING — {{ phase }}</strong><br>{{ data.alert_message }}</div>
+  </div>
+  {% endif %}
+{% endfor %}
+
+<!-- Radar/Bar chart -->
+<div class="card" style="margin-bottom:20px;">
+  <div class="card-header">
+    <div class="card-title">Health Scores — All Phases</div>
+    <div class="card-subtitle">0 = failed, 100 = perfect</div>
+  </div>
+  <div style="position:relative;height:220px;"><canvas id="healthBar"></canvas></div>
+</div>
+
+<!-- Phase cards -->
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;">
+  {% for phase, data in health_scores.items() %}
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <div style="font-weight:600;font-size:14px;">{{ phase }}</div>
+      {% if data.alert_level == 'CRITICAL' %}
+        <span class="pill pill-red">🔴 Critical</span>
+      {% elif data.alert_level == 'WARNING' %}
+        <span class="pill pill-yellow">🟡 Warning</span>
+      {% else %}
+        <span class="pill pill-green">🟢 Healthy</span>
+      {% endif %}
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-size:12px;color:var(--text-muted);">Health Score</span>
+      <span style="font-size:22px;font-weight:700;
+        color:{% if data.score >= 80 %}var(--green){% elif data.score >= 60 %}var(--yellow){% else %}var(--red){% endif %};">
+        {{ data.score }}
+      </span>
+    </div>
+    <div class="health-bar" style="margin-bottom:10px;">
+      <div class="health-fill {% if data.score >= 80 %}health-green{% elif data.score >= 60 %}health-yellow{% else %}health-red{% endif %}"
+           style="width:{{ data.score }}%;"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;">
+      <div style="padding:6px 8px;background:var(--surface-2);border-radius:6px;">
+        <div style="color:var(--text-muted);">Avg Power</div>
+        <div class="mono" style="font-weight:600;">{{ data.power_mean }} kW</div>
+      </div>
+      <div style="padding:6px 8px;background:var(--surface-2);border-radius:6px;">
+        <div style="color:var(--text-muted);">Avg Vibration</div>
+        <div class="mono" style="font-weight:600;{% if data.vib_mean > 5 %}color:var(--red){% endif %}">{{ data.vib_mean }} mm/s</div>
+      </div>
+    </div>
+    {% if data.alert_message != 'All sensors nominal' %}
+    <div style="margin-top:8px;font-size:11px;padding:6px 8px;border-radius:6px;
+         color:{% if data.alert_level=='CRITICAL' %}var(--red){% else %}#92400e{% endif %};
+         background:{% if data.alert_level=='CRITICAL' %}#fef2f2{% else %}#fffbeb{% endif %};">
+      {{ data.alert_message }}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const hData = {{ health_chart | safe }};
+const hCtx  = document.getElementById('healthBar');
+if (hCtx) {
+  new Chart(hCtx, {
+    type:'bar',
+    data:{ labels:hData.labels,
+      datasets:[{ label:'Health Score', data:hData.scores,
+        backgroundColor:hData.colors, borderWidth:0, borderRadius:6 }]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false},
+        tooltip:{callbacks:{label:c=>`Health: ${c.raw}/100`}} },
+      scales:{ x:{grid:{display:false},ticks:{font:{size:11}}},
+               y:{min:0,max:100,grid:{color:'#f0f0ec'},
+                  ticks:{callback:v=>v,font:{size:11}}} }}
+  });
+}
+</script>
+{% endblock %}

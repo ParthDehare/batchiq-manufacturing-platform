@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — BatchIQ{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+{% if not kpis.loaded %}
+<div class="alert alert-yellow">
+  ⚠ <strong>No data loaded.</strong> Place your Excel files in <code>data/</code> and restart — or
+  <a href="{{ url_for('upload') }}" style="font-weight:600;color:inherit;">upload them here →</a>
+</div>
+{% endif %}
+
+<!-- KPI Cards -->
+<div class="kpi-grid">
+  <div class="kpi-card">
+    <div class="kpi-label">Batches Failed Quality</div>
+    <div class="kpi-value">{{ kpis.fail_count }}<span style="font-size:16px;color:var(--text-muted)"> / {{ kpis.total }}</span></div>
+    <div style="margin-top:6px;"><span class="kpi-badge badge-red">▼ {{ kpis.fail_rate }}% fail rate</span></div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Golden Batch</div>
+    <div class="kpi-value" style="font-size:24px;letter-spacing:-1px;">{{ kpis.golden_id }}</div>
+    <div style="margin-top:6px;"><span class="kpi-badge badge-green">★ Score {{ kpis.golden_score }}</span></div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Energy per Batch</div>
+    <div class="kpi-value" style="font-size:20px;">{{ kpis.energy_min }}–{{ kpis.energy_max }}</div>
+    <div style="margin-top:4px;font-size:12px;color:var(--text-muted);">kWh &nbsp;|&nbsp; Compression: {{ kpis.compression_share }}%</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Asset Alerts</div>
+    <div class="kpi-value" style="{% if kpis.critical_count > 0 %}color:var(--red){% endif %}">
+      {% if kpis.critical_count > 0 %}🔴 {{ kpis.critical_count }}{% else %}🟢 0{% endif %}
+      <span style="font-size:14px;font-weight:400;color:var(--text-muted);">critical</span>
+    </div>
+    <div style="margin-top:4px;font-size:12px;color:var(--text-muted);">{{ kpis.warning_count }} warning(s)</div>
+  </div>
+</div>
+
+<div class="grid-60-40" style="margin-bottom:20px;">
+  <!-- Batch score chart -->
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">All Batches — Quality Score</div>
+        <div class="card-subtitle">Green = PASS &nbsp; Red = FAIL (ML predicted)</div>
+      </div>
+      <div class="chip-select">{{ kpis.total }} batches</div>
+    </div>
+    <div style="display:flex;gap:20px;margin-bottom:14px;">
+      <div><div style="font-size:11px;color:var(--text-muted);">Passing</div><div style="font-size:22px;font-weight:700;color:#16a34a;">{{ kpis.total - kpis.fail_count }}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);">Failing</div><div style="font-size:22px;font-weight:700;color:var(--red);">{{ kpis.fail_count }}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);">Avg Energy</div><div style="font-size:22px;font-weight:700;">{{ kpis.energy_mean }} <span style="font-size:13px;font-weight:400;">kWh</span></div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);">Avg CO₂</div><div style="font-size:22px;font-weight:700;">{{ kpis.co2_mean }} <span style="font-size:13px;font-weight:400;">kg</span></div></div>
+    </div>
+    <div style="position:relative;height:200px;"><canvas id="batchChart"></canvas></div>
+  </div>
+
+  <!-- Top batches -->
+  <div class="card">
+    <div class="card-header"><div class="card-title">Top 10 Batches</div></div>
+    {% if top_batches %}
+    <div style="display:flex;flex-direction:column;gap:3px;">
+      {% for b in top_batches %}
+      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
+                  {% if loop.first %}background:var(--accent-light);{% endif %}">
+        <span class="mono" style="width:36px;font-weight:600;font-size:12px;
+              color:{% if loop.first %}var(--accent){% else %}var(--text-muted){% endif %};">{{ b.id }}</span>
+        <div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+          <div style="height:100%;width:{{ (b.score*100)|round }}%;
+                      background:{% if loop.first %}var(--accent){% else %}#aaa{% endif %};border-radius:2px;"></div>
+        </div>
+        <span style="font-size:12px;font-weight:600;width:40px;text-align:right;">{{ b.score }}</span>
+        <span class="pill {% if b.status=='PASS' %}pill-green{% else %}pill-red{% endif %}" style="font-size:10px;">{{ b.status }}</span>
+        {% if loop.first %}<span>★</span>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div style="text-align:center;padding:30px;color:var(--text-muted);">Upload data to see rankings</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid-3">
+  <!-- Phase energy donut -->
+  <div class="card">
+    <div class="card-header"><div class="card-title">Energy by Phase</div><a href="{{ url_for('energy') }}" style="font-size:12px;color:var(--accent);">Details →</a></div>
+    <div style="position:relative;height:160px;"><canvas id="phaseDonut"></canvas></div>
+  </div>
+
+  <!-- Failing batches -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Failing Batches</div>
+      <span class="kpi-badge badge-red">{{ kpis.fail_count }} total</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:5px;max-height:140px;overflow-y:auto;">
+      {% for b in fail_ids %}
+      <span class="mono pill pill-red" style="font-size:10px;">{{ b }}</span>
+      {% endfor %}
+      {% if not fail_ids %}<span style="color:var(--text-muted);font-size:13px;">None — all batches passing!</span>{% endif %}
+    </div>
+  </div>
+
+  <!-- Quick actions -->
+  <div class="card">
+    <div class="card-header"><div class="card-title">Quick Actions</div></div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <a href="{{ url_for('predict') }}" class="btn btn-outline" style="justify-content:flex-start;">◈ Predict Batch Quality</a>
+      <a href="{{ url_for('golden_batch') }}" class="btn btn-outline" style="justify-content:flex-start;">★ Golden Batch Optimizer</a>
+      <a href="{{ url_for('health') }}" class="btn btn-outline" style="justify-content:flex-start;">
+        {% if kpis.critical_count %}🔴{% else %}🟢{% endif %} Asset Health Monitor</a>
+      <a href="{{ url_for('upload') }}" class="btn btn-green" style="justify-content:flex-start;">↑ Upload New Data</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const batchData  = {{ batch_chart | safe }};
+const phaseData  = {{ phase_energy | safe }};
+
+// Batch bar chart
+const bCtx = document.getElementById('batchChart');
+if (bCtx && batchData.length) {
+  new Chart(bCtx, {
+    type: 'bar',
+    data: {
+      labels: batchData.map(d=>d.id),
+      datasets: [{
+        data:            batchData.map(d=>d.score),
+        backgroundColor: batchData.map(d=>d.pass ? '#2d5a27' : '#ef4444'),
+        borderWidth: 0, borderRadius: 3
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend:{display:false},
+        tooltip:{ callbacks:{ label: c => ` Score: ${c.raw} — ${batchData[c.dataIndex].pass?'PASS':'FAIL'}` }}},
+      scales: {
+        x:{ ticks:{maxTicksLimit:15,font:{size:9}}, grid:{display:false} },
+        y:{ min:0, max:1, grid:{color:'#f0f0ec'}, ticks:{font:{size:10}} }
+      }
+    }
+  });
+}
+
+// Phase donut
+const pCtx = document.getElementById('phaseDonut');
+if (pCtx && Object.keys(phaseData).length) {
+  const labels = Object.keys(phaseData);
+  const vals   = Object.values(phaseData);
+  const colors = ['#2d5a27','#3d7a37','#4d9a47','#6ab85e','#88c67c','#a8d49c','#c8e4bc','#e8f4dc'];
+  new Chart(pCtx, {
+    type: 'doughnut',
+    data: { labels, datasets:[{ data:vals, backgroundColor:colors, borderWidth:0 }] },
+    options: {
+      responsive:true, maintainAspectRatio:false, cutout:'65%',
+      plugins: { legend:{display:false},
+        tooltip:{ callbacks:{ label: c => ` ${c.label}: ${c.raw}%` }}}
+    }
+  });
+}
+</script>
+{% endblock %}

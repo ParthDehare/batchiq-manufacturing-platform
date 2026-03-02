@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}Upload Data — BatchIQ{% endblock %}
+{% block page_title %}Upload Data{% endblock %}
+
+{% block extra_css %}
+<style>
+.drop-zone{border:2px dashed var(--border-2);border-radius:var(--radius);padding:44px;text-align:center;
+  transition:all .2s;cursor:pointer;background:var(--surface-2);position:relative;}
+.drop-zone:hover,.drop-zone.drag-over{border-color:var(--accent);background:var(--accent-light);}
+.drop-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;}
+.mode-btn{padding:9px 20px;border-radius:8px;border:1px solid var(--border);background:white;
+  font-size:13px;cursor:pointer;font-family:inherit;transition:all .15s;}
+.mode-btn.active{background:var(--accent);color:white;border-color:var(--accent);}
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:800px;">
+
+  {% if not loaded %}
+  <div class="alert alert-blue" style="margin-bottom:20px;">
+    ℹ <div><strong>Getting Started:</strong> Upload <code>batch_production_data.xlsx</code> first using <strong>Replace & Retrain</strong> mode, then upload <code>batch_process_data.xlsx</code> using <strong>Process Sensor Data</strong> mode.</div>
+  </div>
+  {% endif %}
+
+  <div class="card" style="margin-bottom:20px;">
+    <div class="card-header">
+      <div><div class="card-title">Upload Excel File</div><div class="card-subtitle">Accepts .xlsx and .xls</div></div>
+    </div>
+
+    <form method="POST" enctype="multipart/form-data">
+      <!-- Mode selector -->
+      <div style="margin-bottom:18px;">
+        <label style="margin-bottom:8px;display:block;">Upload Mode</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+          <button type="button" class="mode-btn" onclick="setMode('predict_only',this)">◈ Predict Only</button>
+          <button type="button" class="mode-btn active" onclick="setMode('production',this)">↻ Replace Production + Retrain</button>
+          <button type="button" class="mode-btn" onclick="setMode('process',this)">📡 Process Sensor Data</button>
+        </div>
+        <input type="hidden" name="file_type" id="fileTypeInput" value="production">
+        <div id="modeDesc" style="font-size:12px;color:var(--text-secondary);padding:8px 12px;background:var(--surface-2);border-radius:6px;">
+          <strong>Replace + Retrain:</strong> Replaces <code>batch_production_data.xlsx</code>, deletes cached model, retrains from scratch. Best for new batch data.
+        </div>
+      </div>
+
+      <!-- Drop zone -->
+      <div class="drop-zone" id="dropZone">
+        <input type="file" name="file" id="fileInput" accept=".xlsx,.xls" onchange="showFile(this)">
+        <div style="font-size:40px;margin-bottom:10px;">📊</div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:6px;">Drop Excel file here or click to browse</div>
+        <div style="color:var(--text-muted);font-size:13px;">Accepts .xlsx and .xls files</div>
+        <div id="fileName" style="display:none;margin-top:12px;padding:6px 14px;background:var(--accent-light);
+             color:var(--accent);border-radius:6px;font-size:13px;font-weight:600;display:none;">
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px;margin-top:14px;">
+        ↑ Upload & Process
+      </button>
+    </form>
+  </div>
+
+  <!-- Format reference -->
+  <div class="grid-2" style="margin-bottom:20px;">
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:8px;">📋 Production File Columns</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;"><code>batch_production_data.xlsx</code></div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+        {% for c in ['Batch_ID','Granulation_Time','Binder_Amount','Drying_Temp','Drying_Time','Compression_Force','Machine_Speed','Lubricant_Conc','Moisture_Content','Tablet_Weight','Hardness','Friability','Disintegration_Time','Dissolution_Rate','Content_Uniformity'] %}
+        <span class="mono" style="background:var(--surface-2);padding:2px 7px;border-radius:4px;font-size:10px;">{{ c }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:8px;">📡 Process Sensor File Columns</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;"><code>batch_process_data.xlsx</code></div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+        {% for c in ['Batch_ID','Time_Minutes','Phase','Temperature_C','Pressure_Bar','Humidity_Percent','Motor_Speed_RPM','Compression_Force_kN','Flow_Rate_LPM','Power_Consumption_kW','Vibration_mm_s'] %}
+        <span class="mono" style="background:var(--surface-2);padding:2px 7px;border-radius:4px;font-size:10px;">{{ c }}</span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  {% if upload_result %}
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Upload Results</div>
+      <span class="kpi-badge badge-green">✓ {{ upload_result.rows }} rows processed</span>
+    </div>
+
+    {% if upload_result.predictions %}
+    <div style="margin-bottom:14px;font-weight:600;font-size:13px;">ML Predictions ({{ upload_result.predictions|length }} batches)</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Batch ID</th><th>Moisture</th><th>Hardness (N)</th><th>Friability %</th>
+          <th>Dissolution %</th><th>Uniformity %</th><th>ML Status</th>
+        </tr></thead>
+        <tbody>
+          {% for p in upload_result.predictions %}
+          {% set hard=p.get('Hardness',90) %}
+          {% set fria=p.get('Friability',0.5) %}
+          {% set diss=p.get('Dissolution_Rate',85) %}
+          {% set unif=p.get('Content_Uniformity',100) %}
+          {% set mois=p.get('Moisture_Content',2) %}
+          {% set pass = hard>=50 and hard<=130 and fria<1.0 and diss>80 and unif>=95 and unif<=105 and mois<3.0 %}
+          <tr>
+            <td class="mono" style="font-weight:700;">{{ p.get('Batch_ID','—') }}</td>
+            <td class="mono" {% if mois>=3 %}style="color:var(--red);font-weight:600;"{% endif %}>{{ "%.2f"|format(mois) }}</td>
+            <td class="mono" {% if hard<50 or hard>130 %}style="color:var(--red);font-weight:600;"{% endif %}>{{ "%.1f"|format(hard) }}</td>
+            <td class="mono" {% if fria>=1 %}style="color:var(--red);font-weight:600;"{% endif %}>{{ "%.3f"|format(fria) }}</td>
+            <td class="mono" {% if diss<80 %}style="color:var(--red);font-weight:600;"{% endif %}>{{ "%.1f"|format(diss) }}</td>
+            <td class="mono" {% if unif<95 or unif>105 %}style="color:var(--red);font-weight:600;"{% endif %}>{{ "%.1f"|format(unif) }}</td>
+            <td><span class="pill {% if pass %}pill-green{% else %}pill-red{% endif %}">{% if pass %}PASS{% else %}FAIL{% endif %}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% elif upload_result.type in ['production','process'] %}
+    <div class="alert alert-green">✅ Data loaded successfully. Navigate to Dashboard, Energy, Golden Batch or Health to see updated analytics.</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const MODES = {
+  predict_only: '<strong>Predict Only:</strong> Run ML predictions on uploaded file without changing platform data.',
+  production:   '<strong>Replace + Retrain:</strong> Replaces <code>batch_production_data.xlsx</code>, deletes cached model, retrains from scratch.',
+  process:      '<strong>Process Sensor Data:</strong> Replaces <code>batch_process_data.xlsx</code> and refreshes Energy & Health analytics.'
+};
+function setMode(mode, btn) {
+  document.getElementById('fileTypeInput').value = mode;
+  document.getElementById('modeDesc').innerHTML = MODES[mode];
+  document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+}
+function showFile(inp) {
+  if(inp.files.length){
+    const el=document.getElementById('fileName');
+    el.textContent='📄 '+inp.files[0].name; el.style.display='inline-block';
+  }
+}
+const dz=document.getElementById('dropZone');
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
+dz.addEventListener('drop',e=>{
+  e.preventDefault(); dz.classList.remove('drag-over');
+  const fi=document.getElementById('fileInput');
+  const dt=new DataTransfer(); dt.items.add(e.dataTransfer.files[0]);
+  fi.files=dt.files; showFile(fi);
+});
+</script>
+{% endblock %}

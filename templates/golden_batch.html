@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Golden Batch — BatchIQ{% endblock %}
+{% block page_title %}Golden Batch Optimizer{% endblock %}
+
+{% block content %}
+<!-- Hero -->
+<div class="card" style="margin-bottom:20px;background:linear-gradient(135deg,#1d3a19,#2d5a27);color:white;border:none;">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:16px;">
+    <div>
+      <div style="font-size:11px;opacity:0.65;letter-spacing:0.1em;margin-bottom:4px;">CURRENT GOLDEN STANDARD</div>
+      <div style="font-size:42px;font-weight:700;font-family:'DM Mono',monospace;line-height:1;">★ {{ golden_id }}</div>
+      <div style="font-size:14px;opacity:0.8;margin-top:6px;">Composite Score: <strong>{{ golden_score }}</strong></div>
+    </div>
+    {% if golden_params %}
+    <div style="display:flex;flex-wrap:wrap;gap:8px;">
+      {% for k,v in golden_params.items() %}
+      <div style="padding:10px 14px;background:rgba(255,255,255,0.1);border-radius:10px;">
+        <div style="font-size:10px;opacity:0.65;margin-bottom:3px;">{{ k.replace('_',' ') }}</div>
+        <div style="font-size:16px;font-weight:700;font-family:'DM Mono',monospace;">{{ v }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid-60-40">
+  <!-- Top 10 table -->
+  <div class="card">
+    <div class="card-header">
+      <div><div class="card-title">Rankings — All Batches</div><div class="card-subtitle">Ranked by composite quality score</div></div>
+    </div>
+    <div style="position:relative;height:180px;margin-bottom:16px;"><canvas id="rankChart"></canvas></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Batch</th><th>Score</th><th>Hardness (N)</th><th>Dissolution %</th><th>Uniformity %</th><th>Energy kWh</th></tr></thead>
+        <tbody>
+          {% for b in top10 %}
+          <tr {% if loop.first %}style="background:var(--accent-light);"{% endif %}>
+            <td style="color:var(--text-muted);font-weight:600;">{{ loop.index }}</td>
+            <td><span class="mono" style="font-weight:{% if loop.first %}700{% else %}500{% endif %};{% if loop.first %}color:var(--accent){% endif %}">{{ b.batch_id }}</span>{% if loop.first %} ★{% endif %}</td>
+            <td class="mono" style="font-weight:600;">{{ b.score }}</td>
+            <td class="mono">{{ b.hardness }}</td>
+            <td class="mono">{{ b.dissolution }}</td>
+            <td class="mono">{{ b.uniformity }}</td>
+            <td class="mono">{{ b.energy }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Weight sliders -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Adaptive Weight Optimizer</div>
+      <div class="card-subtitle">Drag sliders → click Recalculate</div>
+    </div>
+    {% set wlabels = [('hardness','Hardness'),('friability','Friability'),
+                      ('dissolution','Dissolution Rate'),('uniformity','Content Uniformity'),
+                      ('moisture','Moisture Content'),('energy','Energy Efficiency')] %}
+    {% for key,label in wlabels %}
+    <div style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+        <label style="margin:0;font-weight:500;">{{ label }}</label>
+        <span id="lbl_{{ key }}" style="font-family:'DM Mono',monospace;font-weight:700;color:var(--accent);">{{ (default_weights[key]*100)|int }}%</span>
+      </div>
+      <input type="range" min="0" max="50" value="{{ (default_weights[key]*100)|int }}"
+             id="w_{{ key }}" oninput="document.getElementById('lbl_{{ key }}').textContent=this.value+'%'"
+             style="width:100%;height:4px;padding:0;border:none;cursor:pointer;accent-color:var(--accent);">
+    </div>
+    {% endfor %}
+    <button class="btn btn-primary" onclick="recalculate()" style="width:100%;justify-content:center;margin-top:4px;">
+      ↻ Recalculate Rankings
+    </button>
+    <div id="recalcResult" style="display:none;margin-top:12px;" class="alert alert-green">
+      New Golden Batch: <strong id="rGolden">—</strong> &nbsp; Score: <strong id="rScore">—</strong>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const allScores = {{ all_scores | safe }};
+
+const rCtx = document.getElementById('rankChart');
+if (rCtx && allScores.length) {
+  const top = allScores.slice(0,20);
+  new Chart(rCtx, {
+    type:'bar',
+    data:{ labels: top.map(d=>d.id),
+      datasets:[{ data:top.map(d=>d.score),
+        backgroundColor: top.map((_,i)=> i===0 ? '#2d5a27' : '#c8e4bc'),
+        borderWidth:0, borderRadius:4 }]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false} },
+      scales:{ x:{grid:{display:false},ticks:{font:{size:10}}},
+               y:{min:0,max:1,grid:{color:'#f0f0ec'},ticks:{font:{size:10}}} }}
+  });
+}
+
+async function recalculate() {
+  const keys=['hardness','friability','dissolution','uniformity','moisture','energy'];
+  const weights={}; let total=0;
+  keys.forEach(k=>{ weights[k]=parseFloat(document.getElementById('w_'+k).value)/100; total+=weights[k]; });
+  if(total>0) keys.forEach(k=>weights[k]/=total);
+  const res  = await fetch('/api/golden-batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(weights)});
+  const data = await res.json();
+  document.getElementById('rGolden').textContent = data.golden_batch;
+  document.getElementById('rScore').textContent  = data.score;
+  document.getElementById('recalcResult').style.display='flex';
+}
+</script>
+{% endblock %}
